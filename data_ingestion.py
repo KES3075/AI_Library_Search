@@ -9,6 +9,7 @@ import chromadb
 from chromadb.config import Settings
 from chromadb.utils import embedding_functions
 import re
+import csv
 
 
 class DataIngestion:
@@ -395,6 +396,379 @@ class DataIngestion:
 
         return len(documents)
 
+    def load_data_from_csv(self, csv_file_path):
+        """Load book data from CSV file and create hierarchical chunks"""
+        documents = []
+        metadatas = []
+        ids = []
+
+        doc_id = 0
+
+        print(f"\n📁 Processing CSV file: {csv_file_path}")
+
+        try:
+            with open(csv_file_path, 'r', encoding='utf-8') as csvfile:
+                reader = csv.DictReader(csvfile)
+                books = list(reader)
+
+            print(f"   Found {len(books)} book records")
+
+            if not books:
+                print("⚠️  No books found in CSV file")
+                return 0
+
+            # Group books by keyword for hierarchical chunking
+            keyword_groups = {}
+            for book in books:
+                keyword = book.get('keyword', 'Unknown')
+                if keyword not in keyword_groups:
+                    keyword_groups[keyword] = []
+                keyword_groups[keyword].append(book)
+
+            # Process each keyword group hierarchically
+            for keyword, keyword_books in keyword_groups.items():
+                print(f"\n🏷️  Processing keyword: {keyword} ({len(keyword_books)} books)")
+
+                # Create hierarchical chunks
+                keyword_chunks = self.create_csv_hierarchical_chunks(keyword, keyword_books)
+
+                # Add chunks to documents
+                for chunk in keyword_chunks:
+                    documents.append(chunk['text'])
+
+                    # Only include primitive types in metadata (ChromaDB requirement)
+                    metadata = {
+                        'source': 'csv',
+                        'keyword': keyword,
+                        'chunk_type': chunk['type'],
+                        'chunk_level': chunk['level'],
+                        'url': 'https://elibrary.nu.edu.om/'
+                    }
+
+                    # Add primitive metadata fields
+                    chunk_meta = chunk.get('metadata', {})
+                    for key, value in chunk_meta.items():
+                        if isinstance(value, (str, int, float, bool)):
+                            metadata[key] = value
+                        elif isinstance(value, (list, dict)):
+                            # Convert complex types to string representation
+                            metadata[key] = str(value)
+
+                    metadatas.append(metadata)
+                    ids.append(f"csv_doc_{doc_id}")
+                    doc_id += 1
+
+            # Add all documents to ChromaDB
+            if documents:
+                print(f"\n💾 Adding {len(documents)} documents to ChromaDB...")
+
+                # Add in batches to avoid memory issues
+                batch_size = 100
+                for i in range(0, len(documents), batch_size):
+                    batch_docs = documents[i:i+batch_size]
+                    batch_metas = metadatas[i:i+batch_size]
+                    batch_ids = ids[i:i+batch_size]
+
+                    self.collection.add(
+                        documents=batch_docs,
+                        metadatas=batch_metas,
+                        ids=batch_ids
+                    )
+
+                print(f"✅ Successfully loaded {len(documents)} documents into ChromaDB")
+            else:
+                print("\n⚠️  No documents found to load")
+
+            return len(documents)
+
+        except Exception as e:
+            print(f"   ✗ Error processing CSV file: {e}")
+            return 0
+
+    def create_csv_hierarchical_chunks(self, keyword, books):
+        """Create hierarchical chunks for CSV data: keyword → author → individual books"""
+        chunks = []
+
+        if not books:
+            return chunks
+
+        # Level 1: Keyword-level summary chunk (biggest)
+        keyword_summary = self.create_keyword_summary_chunk(keyword, books)
+        chunks.append(keyword_summary)
+
+        # Level 2: Author collection chunks (medium) - only if multiple books by same author
+        author_groups = self.group_books_by_author(books)
+        for author, author_books in author_groups.items():
+            if len(author_books) > 1:  # Only create author chunks if they have multiple books
+                author_chunk = self.create_author_summary_chunk_csv(author, author_books, keyword)
+                chunks.append(author_chunk)
+
+        # Level 3: Individual book chunks (smallest)
+        for book in books:
+            book_chunk = self.create_book_chunk(book, keyword)
+            chunks.append(book_chunk)
+
+        return chunks
+
+    def create_keyword_summary_chunk(self, keyword, books):
+        """Create a big chunk summarizing all books for a keyword"""
+        total_books = len(books)
+        authors = set(book.get('author', 'Unknown') for book in books if book.get('author'))
+
+        # Aggregate statistics
+        availability_stats = {}
+        college_stats = {}
+
+        for book in books:
+            # Extract availability info
+            description = book.get('description', '')
+            if 'Not for loan' in description or 'Reference only' in description:
+                availability = 'Reference only'
+            elif 'Available for loan' in description:
+                availability = 'Available for loan'
+            else:
+                availability = 'Unknown'
+            availability_stats[availability] = availability_stats.get(availability, 0) + 1
+
+            # Extract college info from description
+            if 'College of Engineering' in description:
+                college = 'College of Engineering'
+            elif 'College of Medicine and Health Sciences' in description:
+                college = 'College of Medicine and Health Sciences'
+            elif 'College of Pharmacy' in description:
+                college = 'College of Pharmacy'
+            elif 'International Maritime College Oman' in description:
+                college = 'International Maritime College Oman'
+            else:
+                college = 'Unknown'
+            college_stats[college] = college_stats.get(college, 0) + 1
+
+        # Create comprehensive summary text
+        summary_parts = [
+            f"KEYWORD OVERVIEW: {keyword}",
+            f"Total Books: {total_books}",
+            f"Total Authors: {len(authors)}",
+            "",
+            "COLLEGE DISTRIBUTION:"
+        ]
+
+        for college, count in college_stats.items():
+            summary_parts.append(f"  - {college}: {count} books")
+
+        summary_parts.extend(["", "AVAILABILITY:"])
+        for availability, count in availability_stats.items():
+            summary_parts.append(f"  - {availability}: {count} books")
+
+        summary_parts.extend(["", "TOP AUTHORS:"])
+        author_counts = {}
+        for book in books:
+            author = book.get('author', 'Unknown')
+            author_counts[author] = author_counts.get(author, 0) + 1
+
+        top_authors = sorted(author_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        for author, count in top_authors:
+            summary_parts.append(f"  - {author}: {count} books")
+
+        summary_text = "\n".join(summary_parts)
+
+        return {
+            'text': summary_text,
+            'type': 'keyword_summary',
+            'level': 1,
+            'metadata': {
+                'total_books': total_books,
+                'total_authors': len(authors),
+                'keyword': keyword,
+                'college_stats': college_stats,
+                'availability_stats': availability_stats
+            }
+        }
+
+    def create_author_summary_chunk_csv(self, author, books, keyword):
+        """Create a medium chunk summarizing an author's books for a keyword"""
+        book_count = len(books)
+
+        # Aggregate author statistics
+        colleges = set()
+        availability_types = set()
+
+        for book in books:
+            description = book.get('description', '')
+
+            # Extract college
+            if 'College of Engineering' in description:
+                colleges.add('College of Engineering')
+            elif 'College of Medicine and Health Sciences' in description:
+                colleges.add('College of Medicine and Health Sciences')
+            elif 'College of Pharmacy' in description:
+                colleges.add('College of Pharmacy')
+            elif 'International Maritime College Oman' in description:
+                colleges.add('International Maritime College Oman')
+
+            # Extract availability
+            if 'Not for loan' in description or 'Reference only' in description:
+                availability_types.add('Reference only')
+            elif 'Available for loan' in description:
+                availability_types.add('Available for loan')
+
+        # Create author summary
+        summary_parts = [
+            f"AUTHOR PROFILE: {author}",
+            f"Keyword: {keyword}",
+            f"Total Books: {book_count}",
+            f"Colleges: {', '.join(colleges) if colleges else 'Unknown'}",
+            f"Availability Types: {', '.join(availability_types) if availability_types else 'Unknown'}",
+            "",
+            "BOOK TITLES:"
+        ]
+
+        # List book titles
+        for i, book in enumerate(books[:10], 1):  # Limit to first 10 for chunk size
+            title = book.get('title', 'Unknown Title')
+            summary_parts.append(f"  {i}. {title}")
+
+        if len(books) > 10:
+            summary_parts.append(f"  ... and {len(books) - 10} more books")
+
+        summary_text = "\n".join(summary_parts)
+
+        return {
+            'text': summary_text,
+            'type': 'author_summary',
+            'level': 2,
+            'metadata': {
+                'author': author,
+                'keyword': keyword,
+                'book_count': book_count,
+                'colleges': list(colleges),
+                'availability_types': list(availability_types)
+            }
+        }
+
+    def create_book_chunk(self, book, keyword):
+        """Create a small chunk for individual book details"""
+        # Create document text
+        doc_text = self.create_csv_document_text(book)
+
+        # Add structured context
+        context_parts = [
+            f"BOOK DETAIL",
+            f"Keyword: {keyword}",
+            f"Author: {book.get('author', 'Unknown')}",
+            f"Title: {book.get('title', 'Unknown Title')}",
+        ]
+
+        # Extract additional info from description
+        description = book.get('description', '')
+        if 'College of Engineering' in description:
+            context_parts.append("College: College of Engineering")
+        elif 'College of Medicine and Health Sciences' in description:
+            context_parts.append("College: College of Medicine and Health Sciences")
+        elif 'College of Pharmacy' in description:
+            context_parts.append("College: College of Pharmacy")
+        elif 'International Maritime College Oman' in description:
+            context_parts.append("College: International Maritime College Oman")
+
+        if 'Not for loan' in description or 'Reference only' in description:
+            context_parts.append("Availability: Reference only")
+        elif 'Available for loan' in description:
+            context_parts.append("Availability: Available for loan")
+
+        context_parts.extend(["", "CONTENT:"])
+        context_text = "\n".join(context_parts)
+
+        # Combine context with document text
+        full_text = f"{context_text}\n\n{doc_text}"
+
+        return {
+            'text': full_text,
+            'type': 'book_detail',
+            'level': 3,
+            'metadata': {
+                'author': book.get('author'),
+                'title': book.get('title'),
+                'keyword': keyword,
+                'link': book.get('link'),
+                'description': book.get('description')
+            }
+        }
+
+    def group_books_by_author(self, books):
+        """Group books by author"""
+        author_groups = {}
+        for book in books:
+            author = book.get('author', 'Unknown')
+            if author not in author_groups:
+                author_groups[author] = []
+            author_groups[author].append(book)
+        return author_groups
+
+    def create_csv_document_text(self, book_info):
+        """Create comprehensive document text for CSV book data"""
+        text_parts = []
+
+        # Start with core book information
+        if 'author' in book_info and book_info['author']:
+            author = book_info['author']
+            text_parts.append(f"Author: {author}")
+            # Add author variations for better searchability
+            text_parts.append(f"Dr {author} Professor {author} faculty {author}")
+
+        if 'title' in book_info and book_info['title']:
+            text_parts.append(f"Title: {book_info['title']}")
+
+        if 'keyword' in book_info and book_info['keyword']:
+            text_parts.append(f"Keyword: {book_info['keyword']}")
+
+        # Extract and add college information from description
+        description = book_info.get('description', '')
+        if 'College of Engineering' in description:
+            text_parts.append("College: College of Engineering")
+            text_parts.append("NU College of Engineering")
+        elif 'College of Medicine and Health Sciences' in description:
+            text_parts.append("College: College of Medicine and Health Sciences")
+            text_parts.append("NU College of Medicine and Health Sciences")
+        elif 'College of Pharmacy' in description:
+            text_parts.append("College: College of Pharmacy")
+            text_parts.append("NU College of Pharmacy")
+        elif 'International Maritime College Oman' in description:
+            text_parts.append("College: International Maritime College Oman")
+            text_parts.append("NU International Maritime College Oman")
+
+        # Extract availability information
+        if 'Not for loan' in description or 'Reference only' in description:
+            text_parts.append("Availability: Reference only - Not for loan")
+        elif 'Available for loan' in description:
+            text_parts.append("Availability: Available for loan")
+        elif 'Checked out' in description:
+            text_parts.append("Availability: Currently checked out")
+        elif 'In transit' in description:
+            text_parts.append("Availability: In transit")
+
+        # Extract publication and edition info
+        if 'Publication:' in description:
+            pub_match = re.search(r'Publication:\s*([^|]+)', description)
+            if pub_match:
+                text_parts.append(f"Publication: {pub_match.group(1).strip()}")
+
+        if 'Edition:' in description:
+            edition_match = re.search(r'Edition:\s*([^|]+)', description)
+            if edition_match:
+                text_parts.append(f"Edition: {edition_match.group(1).strip()}")
+
+        # Add link information
+        if 'link' in book_info and book_info['link']:
+            text_parts.append(f"Library Link: {book_info['link']}")
+
+        # Add raw description for additional context
+        if description:
+            # Clean up description for better embedding
+            clean_desc = description.replace('|', ' ').replace('  ', ' ')
+            text_parts.append(f"Description: {clean_desc}")
+
+        # Join all parts with newlines for better readability and embedding
+        return "\n".join(text_parts)
+
     def create_hierarchical_chunks(self, college, publications, file_data):
         """Create hierarchical chunks: big chunks then split into smaller ones"""
         chunks = []
@@ -673,12 +1047,12 @@ class DataIngestion:
 
 
 def main():
-    """Main function to run data ingestion with hierarchical chunking"""
+    """Main function to run data ingestion from CSV file with hierarchical chunking"""
     print("🚀 Starting NU eLibrary Data Ingestion...")
-    print("   (Hierarchical chunking: College → Author → Publication levels)")
+    print("   (Hierarchical chunking: Keyword → Author → Book levels)")
 
-    # Path to markdown data folder (relative to current directory)
-    md_folder = "./f3061ffd-e619-46d4-8e9a-87385fa8e95f 2"
+    # Path to CSV data file (relative to current directory)
+    csv_file = "./library_books_test_progress_408.csv"
 
     # Initialize and load data
     ingestion = DataIngestion()
@@ -694,8 +1068,8 @@ def main():
     except:
         pass
 
-    # Load data from markdown folder only
-    doc_count = ingestion.load_data_from_folders(md_folder)
+    # Load data from CSV file only
+    doc_count = ingestion.load_data_from_csv(csv_file)
 
     # Print stats
     stats = ingestion.get_collection_stats()

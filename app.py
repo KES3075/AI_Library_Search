@@ -86,14 +86,6 @@ st.markdown("""
         text-align: center;
         margin-bottom: 2rem;
     }
-    .relevance-score {
-        background-color: #c6982c;
-        color: white;
-        padding: 0.2rem 0.6rem;
-        border-radius: 15px;
-        font-size: 0.85rem;
-        font-weight: bold;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -157,9 +149,9 @@ class LibraryRAG:
         distances = results['distances'][0]
 
         # Group results by chunk type and level
-        level_1_chunks = []  # College summaries
-        level_2_chunks = []  # Author profiles
-        level_3_chunks = []  # Individual publications
+        level_1_chunks = []  # Keyword summaries
+        level_2_chunks = []  # Author summaries
+        level_3_chunks = []  # Individual books
 
         for doc, meta, dist in zip(documents, metadatas, distances):
             chunk_level = meta.get('chunk_level', 3)
@@ -184,16 +176,16 @@ class LibraryRAG:
         final_results = []
 
         if prioritize_publications:
-            # Strategy: Show some college context, then author info, then publications
-            # Take top 1 college summary if available
+            # Strategy: Show some keyword context, then author info, then books
+            # Take top 1 keyword summary if available
             if level_1_chunks:
                 final_results.extend(sorted(level_1_chunks, key=lambda x: x['distance'])[:1])
 
-            # Take top 2 author profiles if available
+            # Take top 2 author summaries if available
             if level_2_chunks:
                 final_results.extend(sorted(level_2_chunks, key=lambda x: x['distance'])[:2])
 
-            # Fill remaining slots with publications
+            # Fill remaining slots with books
             remaining_slots = max_results - len(final_results)
             if remaining_slots > 0 and level_3_chunks:
                 final_results.extend(sorted(level_3_chunks, key=lambda x: x['distance'])[:remaining_slots])
@@ -214,18 +206,18 @@ class LibraryRAG:
     def generate_summary(self, book_info, query, chunk_type='publication_detail'):
         """Generate AI summary for different types of chunks based on query"""
         # Customize prompt based on chunk type
-        if chunk_type == 'college_summary':
+        if chunk_type == 'keyword_summary':
             prompt = f"""You are a knowledgeable librarian assistant for National University eLibrary.
 
-Given this college overview information:
+Given this keyword overview information:
 {book_info}
 
 User Query: {query}
 
 Provide a concise summary (2-3 sentences) that:
-1. Explains how this college's research relates to the user's query
-2. Highlights key research areas or notable achievements
-3. Mentions the scale of research activity
+1. Explains how this academic keyword relates to the user's query
+2. Highlights key books and research areas covered
+3. Mentions the scope of available resources in this subject area
 
 Keep it professional and academic in tone."""
 
@@ -240,22 +232,22 @@ User Query: {query}
 Provide a concise summary (2-3 sentences) that:
 1. Describes the author's research focus and how it relates to the query
 2. Notes their publication activity and research networks
-3. Highlights their college affiliation and expertise areas
+3. Highlights their expertise areas and available works
 
 Keep it professional and academic in tone."""
 
-        else:  # publication_detail or default
+        else:  # book_detail or default
             prompt = f"""You are a knowledgeable librarian assistant for National University eLibrary.
 
-Given this publication information:
+Given this book information:
 {book_info}
 
 User Query: {query}
 
 Provide a concise, informative summary (2-3 sentences) that:
-1. Highlights why this publication is relevant to the user's query
+1. Highlights why this book is relevant to the user's query
 2. Mentions the author's expertise area if available
-3. Provides context about the publication type and availability
+3. Provides context about the book type and availability
 
 Keep it professional and academic in tone."""
 
@@ -266,20 +258,20 @@ Keep it professional and academic in tone."""
             # Fallback when API fails - customize based on chunk type
             error_msg = str(e)
             if "quota" in error_msg.lower() or "429" in error_msg:
-                if chunk_type == 'college_summary':
-                    return f"A comprehensive overview of research activities at this college, relevant to your search on '{query}'. (AI summary unavailable due to API quota limits - please wait a moment and refresh)"
+                if chunk_type == 'keyword_summary':
+                    return f"A comprehensive overview of books and resources in this academic subject area, relevant to your search on '{query}'. (AI summary unavailable due to API quota limits - please wait a moment and refresh)"
                 elif chunk_type == 'author_summary':
-                    return f"A faculty researcher's profile with multiple publications, relevant to your search on '{query}'. (AI summary unavailable due to API quota limits - please wait a moment and refresh)"
+                    return f"A faculty researcher's profile with multiple books, relevant to your search on '{query}'. (AI summary unavailable due to API quota limits - please wait a moment and refresh)"
                 else:
                     # Extract author name from book_info string if possible
                     if isinstance(book_info, str) and 'Author:' in book_info:
                         try:
                             author_line = [line for line in book_info.split('\n') if line.startswith('Author:')][0]
                             author = author_line.replace('Author:', '').strip()
-                            return f"A faculty publication by {author}. This work is available for reference in the NU eLibrary collection and is relevant to your search on {query}."
+                            return f"A book by {author}. This work is available for reference in the NU eLibrary collection and is relevant to your search on {query}."
                         except:
                             pass
-                    return f"A faculty publication available in the NU eLibrary collection, relevant to your search on '{query}'. (AI summary unavailable due to API quota limits - please wait a moment and refresh)"
+                    return f"A book available in the NU eLibrary collection, relevant to your search on '{query}'. (AI summary unavailable due to API quota limits - please wait a moment and refresh)"
             return f"Academic content available in the NU eLibrary collection."
     
     def generate_recommendations(self, query, search_results):
@@ -325,27 +317,24 @@ def display_book_card(book_data, rank, query, rag_system):
     chunk_type = metadata.get('chunk_type', 'publication_detail')
     chunk_level = metadata.get('chunk_level', 3)
 
-    # Calculate relevance (distance is between 0 and 2, lower is better)
-    # Convert to percentage where lower distance = higher relevance
-    relevance = max(0, min(100, (1 - distance) * 100))
-
     # Determine card styling and content based on chunk type
-    if chunk_type == 'college_summary':
-        card_icon = "🏛️"
-        card_title = f"College Overview: {metadata.get('college', 'NU College')}"
-        card_subtitle = "📊 Research Overview"
-        button_text = "🔍 Explore College Publications"
-        button_url = f"https://elibrary.nu.edu.om/cgi-bin/koha/opac-search.pl?q={metadata.get('college', '').replace(' ', '+')}"
+    if chunk_type == 'keyword_summary':
+        card_icon = "🏷️"
+        card_title = f"Keyword Overview: {metadata.get('keyword', 'Academic Subject')}"
+        card_subtitle = "📊 Book Collection Overview"
+        button_text = "🔍 Explore Books in this Subject"
+        keyword_search = metadata.get('keyword', '').replace(' ', '+')
+        button_url = f"https://elibrary.nu.edu.om/cgi-bin/koha/opac-search.pl?q={keyword_search}"
     elif chunk_type == 'author_summary':
         card_icon = "👤"
         card_title = f"Author Profile: {metadata.get('author', 'NU Faculty')}"
-        card_subtitle = f"📚 {metadata.get('publication_count', 0)} Publications"
-        button_text = "🔍 View Author Publications"
+        card_subtitle = f"📚 {metadata.get('book_count', 0)} Books"
+        button_text = "🔍 View Author Books"
         author_name = metadata.get('author', '').replace(' ', '+')
         button_url = f"https://elibrary.nu.edu.om/cgi-bin/koha/opac-search.pl?q=au:%22{author_name}%22"
-    else:  # publication_detail
+    else:  # book_detail
         card_icon = "📖"
-        card_title = metadata.get('title', 'Faculty Publication')
+        card_title = metadata.get('title', 'Library Book')
 
         # Extract author from metadata or document
         author = metadata.get('author', 'NU Faculty')
@@ -357,7 +346,7 @@ def display_book_card(book_data, rank, query, rag_system):
                 pass
         card_subtitle = f"👤 {author}"
         button_text = "🔍 View Full Details on NU eLibrary"
-        button_url = metadata.get('detail_url', metadata.get('url', 'https://elibrary.nu.edu.om/'))
+        button_url = metadata.get('link', 'https://elibrary.nu.edu.om/')
 
     # Create book card with appropriate styling
     st.markdown(f"""
@@ -376,9 +365,6 @@ def display_book_card(book_data, rank, query, rag_system):
                     📊 Chunk Level {chunk_level} • {chunk_type.replace('_', ' ').title()}
                 </div>
             </div>
-            <span class="relevance-score">
-                {relevance:.0f}% Match
-            </span>
         </div>
     """, unsafe_allow_html=True)
 
@@ -388,17 +374,17 @@ def display_book_card(book_data, rank, query, rag_system):
             summary = rag_system.generate_summary(document, query, chunk_type)
     except Exception as e:
         # Fallback summary based on chunk type
-        if chunk_type == 'college_summary':
-            college = metadata.get('college', 'National University')
-            summary = f"A comprehensive overview of research activities and faculty publications at {college}, relevant to your search on '{query}'."
+        if chunk_type == 'keyword_summary':
+            keyword = metadata.get('keyword', 'Academic Subject')
+            summary = f"A comprehensive overview of books and resources in '{keyword}', relevant to your search on '{query}'."
         elif chunk_type == 'author_summary':
             author = metadata.get('author', 'NU Faculty')
-            college = metadata.get('college', 'National University')
-            summary = f"Research profile of {author} from {college}, with {metadata.get('publication_count', 0)} publications relevant to your search on '{query}'."
+            keyword = metadata.get('keyword', 'Academic Subject')
+            summary = f"Profile of {author} with {metadata.get('book_count', 0)} books in '{keyword}', relevant to your search on '{query}'."
         else:
             author = metadata.get('author', 'NU Faculty')
-            college = metadata.get('college', 'National University')
-            summary = f"A faculty publication by {author} from {college}, available for reference in the NU eLibrary collection."
+            keyword = metadata.get('keyword', 'Academic Subject')
+            summary = f"A library book by {author} in '{keyword}', available for reference in the NU eLibrary collection."
 
     st.markdown(f"""
         <div class="book-summary">
@@ -413,66 +399,66 @@ def display_book_card(book_data, rank, query, rag_system):
     """, unsafe_allow_html=True)
 
     # Display additional info based on chunk type
-    if chunk_type == 'college_summary':
+    if chunk_type == 'keyword_summary':
         col1, col2 = st.columns([2, 1])
         with col1:
-            if metadata.get('total_publications'):
-                st.markdown(f"**📚 Total Publications:** {metadata['total_publications']}")
+            if metadata.get('total_books'):
+                st.markdown(f"**📚 Total Books:** {metadata['total_books']}")
             if metadata.get('total_authors'):
                 st.markdown(f"**👥 Total Authors:** {metadata['total_authors']}")
-            if metadata.get('research_links_count'):
-                st.markdown(f"**🔗 Research Profiles:** {metadata['research_links_count']}")
 
         with col2:
-            if metadata.get('item_types'):
-                st.markdown("**📖 Item Types:**")
-                item_types_data = eval(metadata['item_types'])
-                if isinstance(item_types_data, dict):
-                    # College summary: dict with counts
-                    for item_type, count in item_types_data.items():
-                        st.markdown(f"  • {item_type}: {count}")
-                else:
-                    # Author summary: list of types
-                    for item_type in item_types_data:
-                        st.markdown(f"  • {item_type}")
+            if metadata.get('college_stats'):
+                st.markdown("**🏛️ Colleges:**")
+                college_stats = eval(metadata['college_stats'])
+                for college, count in college_stats.items():
+                    st.markdown(f"  • {college}: {count}")
 
     elif chunk_type == 'author_summary':
         col1, col2 = st.columns([2, 1])
         with col1:
-            if metadata.get('college'):
-                st.markdown(f"**🏛️ College:** {metadata['college']}")
-            if metadata.get('publication_count'):
-                st.markdown(f"**📚 Publications:** {metadata['publication_count']}")
+            if metadata.get('keyword'):
+                st.markdown(f"**🏷️ Keyword:** {metadata['keyword']}")
+            if metadata.get('book_count'):
+                st.markdown(f"**📚 Books:** {metadata['book_count']}")
             if metadata.get('has_research_links') == 'True':
                 st.markdown("**🔗 Research Networks:** Available")
 
         with col2:
-            if metadata.get('item_types'):
-                st.markdown("**📖 Item Types:**")
-                for item_type in eval(metadata['item_types']):
-                    st.markdown(f"  • {item_type}")
+            if metadata.get('colleges'):
+                st.markdown("**🏛️ Colleges:**")
+                for college in eval(metadata['colleges']):
+                    st.markdown(f"  • {college}")
 
-    else:  # publication_detail
+    else:  # book_detail
         col1, col2 = st.columns([2, 1])
 
         with col1:
-            if metadata.get('college'):
-                st.markdown(f"**🏛️ College:** {metadata['college']}")
-            if metadata.get('item_type'):
-                st.markdown(f"**📚 Type:** {metadata['item_type']}")
-            if metadata.get('availability'):
-                st.markdown(f"**📍 Availability:** {metadata['availability']}")
+            if metadata.get('keyword'):
+                st.markdown(f"**🏷️ Keyword:** {metadata['keyword']}")
+            if metadata.get('description'):
+                # Extract availability from description
+                description = metadata['description']
+                if 'Not for loan' in description or 'Reference only' in description:
+                    st.markdown("**📍 Availability:** Reference only")
+                elif 'Available for loan' in description:
+                    st.markdown("**📍 Availability:** Available for loan")
+                elif 'Checked out' in description:
+                    st.markdown("**📍 Availability:** Currently checked out")
+                elif 'In transit' in description:
+                    st.markdown("**📍 Availability:** In transit")
 
         with col2:
-            # Research profile links
-            st.markdown('<div class="book-links">', unsafe_allow_html=True)
-            if metadata.get('google_scholar'):
-                st.markdown(f"[🎓 Google Scholar]({metadata['google_scholar']})")
-            if metadata.get('research_gate'):
-                st.markdown(f"[🔬 ResearchGate]({metadata['research_gate']})")
-            if metadata.get('scopus'):
-                st.markdown(f"[📊 Scopus]({metadata['scopus']})")
-            st.markdown('</div>', unsafe_allow_html=True)
+            # Extract college info from description
+            description = metadata.get('description', '')
+            if 'College of Engineering' in description:
+                st.markdown("**🏛️ College:** College of Engineering")
+            elif 'College of Medicine and Health Sciences' in description:
+                st.markdown("**🏛️ College:** College of Medicine and Health Sciences")
+            elif 'College of Pharmacy' in description:
+                st.markdown("**🏛️ College:** College of Pharmacy")
+            elif 'International Maritime College Oman' in description:
+                st.markdown("**🏛️ College:** International Maritime College Oman")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -483,7 +469,7 @@ def main():
     st.markdown("""
         <div class="header-banner">
             <h1>🧠 NU eLibrary Intelligent Search</h1>
-            <p style="margin-top: 0.5rem; font-size: 1.1rem; opacity: 0.9;">Hierarchical AI-Powered Research Discovery</p>
+            <p style="margin-top: 0.5rem; font-size: 1.1rem; opacity: 0.9;">Keyword-Based AI-Powered Book Discovery</p>
         </div>
     """, unsafe_allow_html=True)
     
@@ -497,14 +483,14 @@ def main():
     # Sidebar removed for cleaner interface
     
     # Main search interface
-    st.markdown("### 🔎 Search Publications")
+    st.markdown("### 🔎 Search Books")
     
     # Search input
     col1, col2 = st.columns([4, 1])
     with col1:
         query = st.text_input(
             "Enter your search query:",
-            placeholder="e.g., mechanical engineering, College of Engineering, Dr Ahmed, medical research...",
+            placeholder="e.g., research methodology, qualitative research, machine learning, data analysis...",
             label_visibility="collapsed"
         )
     with col2:
@@ -516,7 +502,7 @@ def main():
         
         with st.spinner("🔍 Searching through hierarchical knowledge base..."):
             # Search for books with hierarchical chunking
-            results = rag_system.search_books(query, n_results=7)  # Increased for hierarchical results
+            results = rag_system.search_books(query, n_results=5)  # Limited to maximum 5 results
 
             if results['documents'][0]:
                 # Generate AI introduction
@@ -527,7 +513,7 @@ def main():
                 st.info(intro)
 
                 st.markdown("---")
-                st.markdown("### 📚 Intelligent Results (Hierarchical Search)")
+                st.markdown("### 📚 Intelligent Results (Keyword-Based Search)")
 
                 # Count chunk types for summary
                 chunk_types = {}
@@ -537,12 +523,12 @@ def main():
 
                 # Display chunk type summary
                 summary_parts = []
-                if chunk_types.get('college_summary'):
-                    summary_parts.append(f"🏛️ {chunk_types['college_summary']} College Overview")
+                if chunk_types.get('keyword_summary'):
+                    summary_parts.append(f"🏷️ {chunk_types['keyword_summary']} Keyword Overview")
                 if chunk_types.get('author_summary'):
                     summary_parts.append(f"👤 {chunk_types['author_summary']} Author Profile")
-                if chunk_types.get('publication_detail'):
-                    summary_parts.append(f"📖 {chunk_types['publication_detail']} Publication")
+                if chunk_types.get('book_detail'):
+                    summary_parts.append(f"📖 {chunk_types['book_detail']} Book")
 
                 if summary_parts:
                     st.markdown(f"**Result Mix:** {' • '.join(summary_parts)}")
@@ -561,15 +547,15 @@ def main():
                 # Footer with hierarchical stats
                 st.markdown("---")
                 total_results = len(results['documents'][0])
-                college_overviews = chunk_types.get('college_summary', 0)
+                keyword_overviews = chunk_types.get('keyword_summary', 0)
                 author_profiles = chunk_types.get('author_summary', 0)
-                publications = chunk_types.get('publication_detail', 0)
+                books = chunk_types.get('book_detail', 0)
 
                 st.success(f"✅ Found {total_results} intelligently ranked results for your query")
-                st.info("💡 **Hierarchical Search Benefits:** College overviews provide context, author profiles show research focus, and individual publications offer specific details.")
+                st.info("💡 **Hierarchical Search Benefits:** Keyword overviews provide subject context, author profiles show research focus, and individual books offer specific details.")
 
             else:
-                st.warning("😕 No publications found matching your query. Try different keywords!")
+                st.warning("😕 No books found matching your query. Try different keywords!")
     
     elif not query:
         # Welcome message
@@ -578,16 +564,13 @@ def main():
         <div style="text-align: center; padding: 3rem 1rem;">
             <h3 style="color: #192f59;">👋 Welcome to NU eLibrary Intelligent Search!</h3>
             <p style="color: #666; font-size: 1.1rem; margin-top: 1rem;">
-                Discover faculty publications and research with our AI-powered hierarchical search system.
+                Discover library books and resources with our AI-powered keyword-based search system.
             </p>
             <p style="color: #666;">
-                Our intelligent system provides multi-level results: college overviews for context,
-                author profiles for research focus, and individual publications for specific details.
+                Our intelligent system provides multi-level results: keyword overviews for subject context,
+                author profiles for research focus, and individual books for specific details.
             </p>
-            <div style="background-color: #f8f9fa; padding: 1rem; border-radius: 10px; margin-top: 1.5rem; display: inline-block;">
-                <strong>🎯 Search Examples:</strong><br>
-                <code>mechanical engineering</code> • <code>Dr Ahmed</code> • <code>College of Engineering</code> • <code>medical research</code>
-            </div>
+           
         </div>
         """, unsafe_allow_html=True)
     
