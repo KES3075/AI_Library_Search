@@ -80,7 +80,7 @@ def scrape_library_books():
             response.raise_for_status()
 
             # Parse the HTML
-            soup = BeautifulSoup(response.content, 'lxml')
+            soup = BeautifulSoup(response.content, 'html.parser')
 
             # Find the results container (table with id 'userresults' or similar)
             results_container = soup.find('div', {'id': 'userresults'})
@@ -271,7 +271,7 @@ def scrape_library_books_test(num_keywords=5):
             response.raise_for_status()
 
             # Parse the HTML
-            soup = BeautifulSoup(response.content, 'lxml')
+            soup = BeautifulSoup(response.content, 'html.parser')
 
             # Find the results container (table with id 'userresults' or similar)
             results_container = soup.find('div', {'id': 'userresults'})

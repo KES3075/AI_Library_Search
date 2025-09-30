@@ -38,17 +38,21 @@ AI-powered search and recommendation system for National University eLibrary fac
 
 3. **Set up secrets**
 
-   **Option 1: Local Development (Recommended)**
+   **Option 1: Local Development**
    Create a `.streamlit/secrets.toml` file in the project root:
-   ```bash
-   [general]
+   ```toml
    GOOGLE_API_KEY = "your_gemini_api_key_here"
    ```
 
    **Option 2: Streamlit Cloud Deployment**
    - Go to your app dashboard on [share.streamlit.io](https://share.streamlit.io)
    - Click on "Settings" > "Secrets"
-   - Add your `GOOGLE_API_KEY` there
+   - Add your `GOOGLE_API_KEY` directly in the dashboard
+
+   **Important Notes:**
+   - For **local development**: Use `.streamlit/secrets.toml` file (no `[general]` section needed)
+   - For **Streamlit Cloud**: Set secrets in the app settings dashboard (file won't work)
+   - The `.streamlit/secrets.toml` file is ignored in production deployments
 
    To get a Gemini API key:
    - Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
@@ -82,11 +86,27 @@ Expected output:
 
 ## 🎯 Running the Application
 
+### Local Development
+
 ```bash
 streamlit run app.py
 ```
 
 The app will open automatically in your browser at `http://localhost:8501`
+
+### Streamlit Cloud Deployment
+
+1. **Push to GitHub**: Make sure your code is in a GitHub repository
+2. **Deploy on Streamlit Cloud**:
+   - Go to [share.streamlit.io](https://share.streamlit.io)
+   - Connect your GitHub repository
+   - Set your main file path to `app.py`
+3. **Configure Secrets**:
+   - In your app dashboard, go to "Settings" > "Secrets"
+   - Add your `GOOGLE_API_KEY`
+4. **Deploy**: Click "Deploy" and wait for the build to complete
+
+**Important**: The `.streamlit/secrets.toml` file is ignored in production - use the dashboard instead!
 
 ## 💡 Usage
 
@@ -180,6 +200,12 @@ Run `python data_ingestion.py` first to create the database.
 Make sure you've set up your secrets correctly:
 - For local development: Create `.streamlit/secrets.toml` with your API key
 - For Streamlit Cloud: Set the secret in your app settings
+
+### Deployment issues with lxml
+If you encounter build errors with `lxml` during deployment:
+- The app has been updated to use BeautifulSoup's built-in HTML parser instead
+- This eliminates the need for the `lxml` dependency that can cause deployment issues
+- No functionality is lost - BeautifulSoup handles XML/HTML parsing perfectly
 
 ### Slow search results
 First search might be slow as models load. Subsequent searches will be faster.
