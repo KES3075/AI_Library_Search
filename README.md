@@ -36,17 +36,24 @@ AI-powered search and recommendation system for National University eLibrary fac
    pip install -r requirements.txt
    ```
 
-3. **Set up environment variables**
-   
-   Create a `.env` file in the project root:
+3. **Set up secrets**
+
+   **Option 1: Local Development (Recommended)**
+   Create a `.streamlit/secrets.toml` file in the project root:
    ```bash
-   GOOGLE_API_KEY=your_gemini_api_key_here
+   [general]
+   GOOGLE_API_KEY = "your_gemini_api_key_here"
    ```
-   
+
+   **Option 2: Streamlit Cloud Deployment**
+   - Go to your app dashboard on [share.streamlit.io](https://share.streamlit.io)
+   - Click on "Settings" > "Secrets"
+   - Add your `GOOGLE_API_KEY` there
+
    To get a Gemini API key:
    - Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
    - Create a new API key
-   - Copy and paste it into your `.env` file
+   - Copy and paste it into your secrets configuration
 
 ## 📊 Data Ingestion
 
@@ -105,7 +112,8 @@ poc/
 ├── data_ingestion.py               # Data loading and processing
 ├── requirements.txt                # Python dependencies
 ├── README.md                       # This file
-├── .env                           # Environment variables (create this)
+├── .streamlit/
+│   └── secrets.toml               # Secrets configuration (create this)
 ├── chroma_db/                     # ChromaDB storage (auto-created)
 ├── f3061ffd-e619-46d4-8e9a-87385fa8e95f/     # JSON data folder
 └── f3061ffd-e619-46d4-8e9a-87385fa8e95f 2/   # Markdown data folder
@@ -113,9 +121,14 @@ poc/
 
 ## 🔧 Configuration
 
-### Environment Variables
+### Secrets Configuration
 
+**Required Secrets:**
 - `GOOGLE_API_KEY`: Your Google Gemini API key (required)
+
+**Setup:**
+- For local development: Create `.streamlit/secrets.toml`
+- For Streamlit Cloud: Use the app settings dashboard
 
 ### Database Settings
 
@@ -164,7 +177,9 @@ All data is sourced from the official National University eLibrary:
 Run `python data_ingestion.py` first to create the database.
 
 ### "GOOGLE_API_KEY not found" error
-Make sure you've created a `.env` file with your API key.
+Make sure you've set up your secrets correctly:
+- For local development: Create `.streamlit/secrets.toml` with your API key
+- For Streamlit Cloud: Set the secret in your app settings
 
 ### Slow search results
 First search might be slow as models load. Subsequent searches will be faster.

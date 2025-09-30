@@ -1,1 +1,26 @@
+# Environment files (old approach)
 .env
+.env.local
+
+# Secrets files (should be committed for deployment)
+.streamlit/secrets.toml
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

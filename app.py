@@ -8,15 +8,10 @@ import chromadb
 from chromadb.config import Settings
 from chromadb.utils import embedding_functions
 import google.generativeai as genai
-from dotenv import load_dotenv
-import os
 import hashlib
 import threading
 import concurrent.futures
 from functools import lru_cache
-
-# Load environment variables
-load_dotenv()
 
 # Configure page
 st.set_page_config(
@@ -118,9 +113,21 @@ class LibraryRAG:
             st.stop()
 
         # Initialize Gemini with standard configuration
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            st.error("⚠️ GOOGLE_API_KEY not found. Please set it in .env file")
+        try:
+            api_key = st.secrets.get("GOOGLE_API_KEY")
+            if not api_key:
+                st.error("⚠️ GOOGLE_API_KEY not found. Please set it in Streamlit secrets.")
+                st.info("💡 To set up secrets locally, create a `.streamlit/secrets.toml` file with:")
+                st.code("""
+GOOGLE_API_KEY = "your-api-key-here"
+""")
+                st.info("🔍 **Troubleshooting:** Make sure the `.streamlit/secrets.toml` file exists in your project root and contains your API key.")
+                st.stop()
+        except Exception as e:
+            st.error(f"❌ Error accessing Streamlit secrets: {e}")
+            st.info("💡 This usually means the secrets.toml file format is incorrect or the file doesn't exist.")
+            st.info("📁 **File should be at:** `.streamlit/secrets.toml`")
+            st.info("📝 **Format should be:** `GOOGLE_API_KEY = \"your-key-here\"` (without [general] section)")
             st.stop()
 
         genai.configure(api_key=api_key)
