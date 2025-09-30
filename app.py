@@ -10,6 +10,10 @@ from chromadb.utils import embedding_functions
 import google.generativeai as genai
 from dotenv import load_dotenv
 import os
+import hashlib
+import threading
+import concurrent.futures
+from functools import lru_cache
 
 # Load environment variables
 load_dotenv()
@@ -99,11 +103,11 @@ class LibraryRAG:
             path="./chroma_db",
             settings=Settings(anonymized_telemetry=False)
         )
-        
+
         self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name="all-MiniLM-L6-v2"
         )
-        
+
         try:
             self.collection = self.client.get_collection(
                 name="nu_library_books",
@@ -112,7 +116,7 @@ class LibraryRAG:
         except:
             st.error("⚠️ Database not found. Please run data_ingestion.py first!")
             st.stop()
-        
+
         # Initialize Gemini with standard configuration
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
@@ -121,22 +125,34 @@ class LibraryRAG:
 
         genai.configure(api_key=api_key)
 
-        # Configure generation with standard settings
+        # Configure generation with optimized settings for speed
         self.generation_config = genai.GenerationConfig(
-            max_output_tokens=8000,  # Limit for concise summaries
-            temperature=0,
+            max_output_tokens=2048,  # Reduced for faster responses
+            temperature=0.1,  # Slightly higher for better quality but still fast
         )
-        
+
         self.model = genai.GenerativeModel(
             'gemini-2.5-flash',
             generation_config=self.generation_config
         )
+
+        # Summary cache for faster responses
+        self.summary_cache = {}
+        self.cache_lock = threading.Lock()
+
+        # Thread pool for parallel processing
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+
+    def cleanup(self):
+        """Cleanup resources"""
+        if hasattr(self, 'executor'):
+            self.executor.shutdown(wait=True)
         
     
-    def search_books(self, query, n_results=10, prioritize_publications=True):
-        """Search for books using semantic search with hierarchical chunking awareness"""
-        # Get more results initially to allow for filtering/prioritization
-        initial_results = n_results * 3
+    def search_books(self, query, n_results=5, prioritize_publications=True):
+        """Search for books using semantic search with hierarchical chunking awareness - optimized for speed"""
+        # Reduced initial results for faster processing
+        initial_results = min(n_results * 2, 15)  # Cap at 15 for speed
 
         results = self.collection.query(
             query_texts=[query],
@@ -147,7 +163,7 @@ class LibraryRAG:
         if not results['documents'][0]:
             return results
 
-        # Process results based on hierarchical structure
+        # Process results based on hierarchical structure - optimized
         processed_results = self._process_hierarchical_results(
             results, query, n_results, prioritize_publications
         )
@@ -214,67 +230,64 @@ class LibraryRAG:
         }
 
         return processed_results
-    
+
+    def _get_cache_key(self, book_info, query, chunk_type):
+        """Generate a cache key for summary caching"""
+        # Create a hash of the inputs for consistent caching
+        content = f"{book_info[:200]}_{query}_{chunk_type}"  # Limit content for faster hashing
+        return hashlib.md5(content.encode()).hexdigest()
+
+    def get_cached_summary(self, book_info, query, chunk_type='keyword_summary'):
+        """Get cached summary or generate new one"""
+        cache_key = self._get_cache_key(book_info, query, chunk_type)
+
+        with self.cache_lock:
+            if cache_key in self.summary_cache:
+                return self.summary_cache[cache_key]
+
+        # Generate new summary
+        summary = self.generate_summary(book_info, query, chunk_type)
+
+        # Cache the result
+        with self.cache_lock:
+            self.summary_cache[cache_key] = summary
+
+        return summary
+
+    def generate_batch_summaries(self, items, query):
+        """Generate multiple summaries in parallel for faster processing"""
+        def generate_single_summary(item):
+            book_info, chunk_type = item
+            return self.get_cached_summary(book_info, query, chunk_type)
+
+        # Use thread pool for parallel processing
+        future_to_item = {
+            self.executor.submit(generate_single_summary, item): item
+            for item in items
+        }
+
+        results = []
+        for future in concurrent.futures.as_completed(future_to_item, timeout=30):
+            try:
+                results.append(future.result())
+            except Exception as e:
+                # Fallback to basic summary on error
+                results.append("Summary temporarily unavailable.")
+
+        return results
+
     def generate_summary(self, book_info, query, chunk_type='keyword_summary'):
         """Generate concise AI summary for different types of chunks based on query"""
         # Customize prompt based on chunk type
+        # Optimized shorter prompts for faster responses
         if chunk_type == 'keyword_summary':
-            prompt = f"""You are an expert academic librarian at National University eLibrary.
-
-KEYWORD COLLECTION DATA:
-{book_info}
-
-USER'S RESEARCH QUERY: {query}
-
-TASK: Provide a concise one-paragraph summary explaining how this keyword collection relates to the user's research query. Focus on the key resources, main themes, and practical value for researchers.
-
-WRITING GUIDELINES:
-- Keep response to one paragraph (3-5 sentences, 100-150 words)
-- Highlight the most relevant books, authors, and research themes
-- Explain the collection's value for the specific query
-- Use specific details from the data when available
-- Maintain professional academic tone
-
-Begin your response directly with the summary."""
+            prompt = f"Academic library collection: {book_info[:300]}... Query: {query}. Summarize relevance in 2-3 sentences, focus on key resources and research value."
 
         elif chunk_type == 'author_summary':
-            prompt = f"""You are an expert academic librarian at National University eLibrary.
-
-AUTHOR PROFILE DATA:
-{book_info}
-
-USER'S RESEARCH QUERY: {query}
-
-TASK: Provide a concise one-paragraph summary of this author's scholarly profile and how their work relates to the user's research query. Focus on their key expertise areas, major publications, and research value.
-
-WRITING GUIDELINES:
-- Keep response to one paragraph (3-5 sentences, 100-150 words)
-- Highlight the author's main research focus and relevant publications
-- Explain how their expertise connects to the specific query
-- Use specific details from the data when available
-- Maintain professional academic tone
-
-Begin your response directly with the author summary."""
+            prompt = f"Author profile: {book_info[:300]}... Query: {query}. Summarize expertise and research connections in 2-3 sentences."
 
         else:  # book_detail or default
-            prompt = f"""You are an expert academic librarian at National University eLibrary.
-
-BOOK INFORMATION:
-{book_info}
-
-USER'S RESEARCH QUERY: {query}
-
-TASK: Provide a concise one-paragraph summary of this book and its relevance to the user's research query. Focus on the book's main content, key contributions, and research value.
-
-WRITING GUIDELINES:
-- Keep response to one paragraph (3-5 sentences, 100-150 words)
-- Describe the book's main topic and key content
-- Explain how it relates to the specific query
-- Highlight the book's value for research or study
-- Use specific details from the data when available
-- Maintain professional academic tone
-
-Begin your response directly with the book summary."""
+            prompt = f"Book details: {book_info[:300]}... Query: {query}. Summarize content and research relevance in 2-3 sentences."
 
         try:
             response = self.model.generate_content(prompt)
@@ -446,13 +459,30 @@ Keep the response conversational, helpful, and focused on the user's specific re
         return f"I found {num_results} relevant resources for '{query}' in the NU eLibrary collection. These materials provide valuable insights for your research and are available for reference."
 
 
-def display_book_card(book_data, rank, query, rag_system):
+def display_book_card(book_data, rank, query, rag_system, summary_cache=None):
     """Display a single book card with AI-generated summary, adapted for hierarchical chunks"""
     metadata = book_data['metadata']
     document = book_data['document']
     distance = book_data['distance']
     chunk_type = metadata.get('chunk_type', 'publication_detail')
     chunk_level = metadata.get('chunk_level', 3)
+
+    # Use cached summary if available, otherwise generate
+    if summary_cache and rank <= len(summary_cache):
+        summary = summary_cache[rank - 1]
+    else:
+        # Fallback summary based on chunk type
+        if chunk_type == 'keyword_summary':
+            keyword = metadata.get('keyword', 'Academic Subject')
+            summary = f"This collection covers '{keyword}' with resources relevant to '{query}', providing valuable academic materials for research and study."
+        elif chunk_type == 'author_summary':
+            author = metadata.get('author', 'NU Faculty')
+            keyword = metadata.get('keyword', 'Academic Subject')
+            summary = f"{author} is a researcher specializing in {keyword}, with publications relevant to '{query}' that contribute to academic discourse."
+        else:
+            author = metadata.get('author', 'NU Faculty')
+            keyword = metadata.get('keyword', 'Academic Subject')
+            summary = f"A library book by {author} in '{keyword}', providing valuable insights for '{query}' research."
 
     # Determine card styling and content based on chunk type
     if chunk_type == 'keyword_summary':
@@ -485,23 +515,7 @@ def display_book_card(book_data, rank, query, rag_system):
         button_text = "🔍 View Full Details on NU eLibrary"
         button_url = metadata.get('link', 'https://elibrary.nu.edu.om/')
 
-    # Generate AI summary with chunk type awareness first
-    try:
-        with st.spinner(f"Generating summary for #{rank}..."):
-            summary = rag_system.generate_summary(document, query, chunk_type)
-    except Exception as e:
-        # Fallback summary based on chunk type
-        if chunk_type == 'keyword_summary':
-            keyword = metadata.get('keyword', 'Academic Subject')
-            summary = f"This collection covers '{keyword}' with resources relevant to '{query}', providing valuable academic materials for research and study."
-        elif chunk_type == 'author_summary':
-            author = metadata.get('author', 'NU Faculty')
-            keyword = metadata.get('keyword', 'Academic Subject')
-            summary = f"{author} is a researcher specializing in {keyword}, with publications relevant to '{query}' that contribute to academic discourse."
-        else:
-            author = metadata.get('author', 'NU Faculty')
-            keyword = metadata.get('keyword', 'Academic Subject')
-            summary = f"A library book by {author} in '{keyword}', providing valuable insights for '{query}' research."
+    # Summary already generated and cached above
 
     # Create complete book card with all content in a single HTML block
     st.markdown(f"""
@@ -632,8 +646,8 @@ def main():
         st.markdown("---")
         
         with st.spinner("🔍 Searching through hierarchical knowledge base..."):
-            # Search for books with hierarchical chunking
-            results = rag_system.search_books(query, n_results=5)  # Limited to maximum 5 results
+            # Search for books with hierarchical chunking - optimized for speed
+            results = rag_system.search_books(query, n_results=4)  # Reduced to 4 for faster loading
 
             if results['documents'][0]:
                 # Generate AI introduction
@@ -665,7 +679,25 @@ def main():
                     st.markdown(f"**Result Mix:** {' • '.join(summary_parts)}")
                     st.markdown("---")
 
-                # Display results
+                # Generate all summaries in batch for faster processing
+                st.markdown("⚡ Generating summaries...")
+                progress_bar = st.progress(0)
+
+                # Prepare items for batch processing
+                summary_items = []
+                for i in range(len(results['documents'][0])):
+                    document = results['documents'][0][i]
+                    metadata = results['metadatas'][0][i]
+                    chunk_type = metadata.get('chunk_type', 'publication_detail')
+                    summary_items.append((document, chunk_type))
+
+                # Generate all summaries in parallel
+                summaries = rag_system.generate_batch_summaries(summary_items, query)
+
+                progress_bar.progress(100)
+                progress_bar.empty()
+
+                # Display results with cached summaries
                 for i in range(len(results['documents'][0])):
                     book_data = {
                         'document': results['documents'][0][i],
@@ -673,7 +705,7 @@ def main():
                         'distance': results['distances'][0][i]
                     }
 
-                    display_book_card(book_data, i + 1, query, rag_system)
+                    display_book_card(book_data, i + 1, query, rag_system, summaries)
 
                 # Footer with hierarchical stats
                 st.markdown("---")
