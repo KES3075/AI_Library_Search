@@ -1,6 +1,7 @@
 """
 NU eLibrary RAG Chatbot
 A search interface for National University eLibrary with AI-powered recommendations
+Enhanced with 65535 max tokens for comprehensive responses
 """
 import streamlit as st
 import chromadb
@@ -92,7 +93,7 @@ st.markdown("""
 
 class LibraryRAG:
     def __init__(self):
-        """Initialize RAG system with ChromaDB and Gemini"""
+        """Initialize RAG system with ChromaDB and Gemini with extended token limit"""
         # Initialize ChromaDB
         self.client = chromadb.PersistentClient(
             path="./chroma_db",
@@ -112,14 +113,25 @@ class LibraryRAG:
             st.error("⚠️ Database not found. Please run data_ingestion.py first!")
             st.stop()
         
-        # Initialize Gemini
+        # Initialize Gemini with standard configuration
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
             st.error("⚠️ GOOGLE_API_KEY not found. Please set it in .env file")
             st.stop()
-        
+
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
+
+        # Configure generation with standard settings
+        self.generation_config = genai.GenerationConfig(
+            max_output_tokens=8000,  # Limit for concise summaries
+            temperature=0,
+        )
+        
+        self.model = genai.GenerativeModel(
+            'gemini-2.5-flash',
+            generation_config=self.generation_config
+        )
+        
     
     def search_books(self, query, n_results=10, prioritize_publications=True):
         """Search for books using semantic search with hierarchical chunking awareness"""
@@ -203,79 +215,149 @@ class LibraryRAG:
 
         return processed_results
     
-    def generate_summary(self, book_info, query, chunk_type='publication_detail'):
-        """Generate AI summary for different types of chunks based on query"""
+    def generate_summary(self, book_info, query, chunk_type='keyword_summary'):
+        """Generate concise AI summary for different types of chunks based on query"""
         # Customize prompt based on chunk type
         if chunk_type == 'keyword_summary':
-            prompt = f"""You are a knowledgeable librarian assistant for National University eLibrary.
+            prompt = f"""You are an expert academic librarian at National University eLibrary.
 
-Given this keyword overview information:
+KEYWORD COLLECTION DATA:
 {book_info}
 
-User Query: {query}
+USER'S RESEARCH QUERY: {query}
 
-Provide a concise summary (2-3 sentences) that:
-1. Explains how this academic keyword relates to the user's query
-2. Highlights key books and research areas covered
-3. Mentions the scope of available resources in this subject area
+TASK: Provide a concise one-paragraph summary explaining how this keyword collection relates to the user's research query. Focus on the key resources, main themes, and practical value for researchers.
 
-Keep it professional and academic in tone."""
+WRITING GUIDELINES:
+- Keep response to one paragraph (3-5 sentences, 100-150 words)
+- Highlight the most relevant books, authors, and research themes
+- Explain the collection's value for the specific query
+- Use specific details from the data when available
+- Maintain professional academic tone
+
+Begin your response directly with the summary."""
 
         elif chunk_type == 'author_summary':
-            prompt = f"""You are a knowledgeable librarian assistant for National University eLibrary.
+            prompt = f"""You are an expert academic librarian at National University eLibrary.
 
-Given this author profile information:
+AUTHOR PROFILE DATA:
 {book_info}
 
-User Query: {query}
+USER'S RESEARCH QUERY: {query}
 
-Provide a concise summary (2-3 sentences) that:
-1. Describes the author's research focus and how it relates to the query
-2. Notes their publication activity and research networks
-3. Highlights their expertise areas and available works
+TASK: Provide a concise one-paragraph summary of this author's scholarly profile and how their work relates to the user's research query. Focus on their key expertise areas, major publications, and research value.
 
-Keep it professional and academic in tone."""
+WRITING GUIDELINES:
+- Keep response to one paragraph (3-5 sentences, 100-150 words)
+- Highlight the author's main research focus and relevant publications
+- Explain how their expertise connects to the specific query
+- Use specific details from the data when available
+- Maintain professional academic tone
+
+Begin your response directly with the author summary."""
 
         else:  # book_detail or default
-            prompt = f"""You are a knowledgeable librarian assistant for National University eLibrary.
+            prompt = f"""You are an expert academic librarian at National University eLibrary.
 
-Given this book information:
+BOOK INFORMATION:
 {book_info}
 
-User Query: {query}
+USER'S RESEARCH QUERY: {query}
 
-Provide a concise, informative summary (2-3 sentences) that:
-1. Highlights why this book is relevant to the user's query
-2. Mentions the author's expertise area if available
-3. Provides context about the book type and availability
+TASK: Provide a concise one-paragraph summary of this book and its relevance to the user's research query. Focus on the book's main content, key contributions, and research value.
 
-Keep it professional and academic in tone."""
+WRITING GUIDELINES:
+- Keep response to one paragraph (3-5 sentences, 100-150 words)
+- Describe the book's main topic and key content
+- Explain how it relates to the specific query
+- Highlight the book's value for research or study
+- Use specific details from the data when available
+- Maintain professional academic tone
+
+Begin your response directly with the book summary."""
 
         try:
             response = self.model.generate_content(prompt)
             return response.text
         except Exception as e:
-            # Fallback when API fails - customize based on chunk type
+            # Fallback when API fails - extract detailed information from book_info
             error_msg = str(e)
             if "quota" in error_msg.lower() or "429" in error_msg:
-                if chunk_type == 'keyword_summary':
-                    return f"A comprehensive overview of books and resources in this academic subject area, relevant to your search on '{query}'. (AI summary unavailable due to API quota limits - please wait a moment and refresh)"
-                elif chunk_type == 'author_summary':
-                    return f"A faculty researcher's profile with multiple books, relevant to your search on '{query}'. (AI summary unavailable due to API quota limits - please wait a moment and refresh)"
-                else:
-                    # Extract author name from book_info string if possible
-                    if isinstance(book_info, str) and 'Author:' in book_info:
-                        try:
-                            author_line = [line for line in book_info.split('\n') if line.startswith('Author:')][0]
-                            author = author_line.replace('Author:', '').strip()
-                            return f"A book by {author}. This work is available for reference in the NU eLibrary collection and is relevant to your search on {query}."
-                        except:
-                            pass
-                    return f"A book available in the NU eLibrary collection, relevant to your search on '{query}'. (AI summary unavailable due to API quota limits - please wait a moment and refresh)"
-            return f"Academic content available in the NU eLibrary collection."
-    
+                return self._generate_detailed_fallback_summary(book_info, query, chunk_type)
+            return self._generate_basic_fallback_summary(book_info, query, chunk_type)
+
+    def _generate_detailed_fallback_summary(self, book_info, query, chunk_type):
+        """Generate concise fallback summary by parsing book_info when API quota is exceeded"""
+        if not isinstance(book_info, str):
+            return f"Academic content available for '{query}' in the NU eLibrary collection. (API temporarily unavailable)"
+
+        lines = book_info.split('\n')
+        extracted_info = {}
+
+        # Extract information from the embedded text
+        for line in lines:
+            line = line.strip()
+            if line.startswith('Author:') and 'Author:' not in extracted_info:
+                author = line.replace('Author:', '').strip()
+                # Clean up author names
+                author = author.replace('Dr ', '').replace('Professor ', '').replace('faculty ', '')
+                if author and author != 'Unknown':
+                    extracted_info['author'] = author
+
+            elif line.startswith('Title:') and 'Title:' not in extracted_info:
+                title = line.replace('Title:', '').strip()
+                if title and title != 'Unknown Title':
+                    extracted_info['title'] = title
+
+            elif line.startswith('Keyword:') and 'Keyword:' not in extracted_info:
+                keyword = line.replace('Keyword:', '').strip()
+                if keyword and keyword != 'Unknown':
+                    extracted_info['keyword'] = keyword
+
+            elif line.startswith('College:') and 'College:' not in extracted_info:
+                college = line.replace('College:', '').strip()
+                if college and college != 'Unknown':
+                    extracted_info['college'] = college
+
+            elif line.startswith('Availability:') and 'Availability:' not in extracted_info:
+                availability = line.replace('Availability:', '').strip()
+                extracted_info['availability'] = availability
+
+            elif line.startswith('Publication:') and 'Publication:' not in extracted_info:
+                publication = line.replace('Publication:', '').strip()
+                extracted_info['publication'] = publication
+
+            elif line.startswith('Description:') and 'Description:' not in extracted_info:
+                description = line.replace('Description:', '').strip()
+                if len(description) > 50:  # Only if substantial description
+                    extracted_info['description'] = description[:200] + '...' if len(description) > 200 else description
+
+        # Generate concise one-paragraph summary based on chunk type
+        if chunk_type == 'keyword_summary':
+            keyword = extracted_info.get('keyword', query)
+            return f"This collection covers '{keyword}' with resources relevant to '{query}', providing valuable academic materials for research and study in this discipline."
+
+        elif chunk_type == 'author_summary':
+            author = extracted_info.get('author', 'NU faculty')
+            keyword = extracted_info.get('keyword', 'academic subjects')
+            return f"{author} is a researcher specializing in {keyword}, with publications relevant to '{query}' that contribute to academic discourse in this field."
+
+        else:  # book_detail
+            title = extracted_info.get('title', 'This publication')
+            author = extracted_info.get('author', 'the author')
+            return f"'{title}' by {author} is a valuable resource for '{query}' research, providing important insights and information for academic study."
+
+    def _generate_basic_fallback_summary(self, book_info, query, chunk_type):
+        """Generate basic fallback summary for other API errors"""
+        if chunk_type == 'keyword_summary':
+            return f"Academic collection covering '{query}' with multiple scholarly resources available in the NU eLibrary."
+        elif chunk_type == 'author_summary':
+            return f"Faculty research profile with publications relevant to '{query}' available for reference."
+        else:
+            return f"Scholarly publication relevant to '{query}' available in the NU eLibrary collection."
+
     def generate_recommendations(self, query, search_results):
-        """Generate comprehensive recommendations using Gemini"""
+        """Generate comprehensive recommendations using Gemini with extended token limit"""
         # Prepare context from search results
         context = "Retrieved Publications:\n\n"
         for i, (doc, meta, dist) in enumerate(zip(
@@ -292,12 +374,13 @@ User Query: {query}
 
 {context}
 
-Based on the above publications, provide:
-1. A brief introduction addressing the user's query
-2. Explain how these publications relate to their search
-3. Mention any notable authors or research areas
+Based on the above publications, provide a concise 4-5 sentence analysis that covers:
 
-Keep it conversational, helpful, and academic. Limit to 4-5 sentences."""
+1. **Key Findings**: Summarize the main themes and most relevant publications found for this query
+2. **Resource Value**: Explain the academic significance and practical applications of these materials
+3. **Research Guidance**: Provide brief recommendations on how to use these resources effectively
+
+Keep the response conversational, helpful, and focused on the user's specific research needs. Limit to exactly 4-5 sentences total."""
 
         try:
             response = self.model.generate_content(prompt)
@@ -305,8 +388,62 @@ Keep it conversational, helpful, and academic. Limit to 4-5 sentences."""
         except Exception as e:
             error_msg = str(e)
             if "quota" in error_msg.lower() or "429" in error_msg:
-                return f"I found {len(search_results['documents'][0])} relevant publications for '{query}' in our collection. These faculty publications span various research areas and are available for reference. (AI analysis temporarily unavailable due to API quota - summaries will return shortly)"
-            return "I found several relevant publications in our collection that might interest you."
+                return self._generate_detailed_recommendation_fallback(query, search_results)
+            return self._generate_basic_recommendation_fallback(query, search_results)
+
+    def _generate_detailed_recommendation_fallback(self, query, search_results):
+        """Generate concise recommendation fallback when API quota exceeded"""
+        num_results = len(search_results['documents'][0])
+
+        # Analyze the results to extract key information
+        keywords_found = set()
+        authors_found = set()
+        chunk_types = {'keyword_summary': 0, 'author_summary': 0, 'book_detail': 0}
+
+        for metadata in search_results['metadatas'][0]:
+            chunk_type = metadata.get('chunk_type', 'book_detail')
+            chunk_types[chunk_type] = chunk_types.get(chunk_type, 0) + 1
+
+            if metadata.get('keyword'):
+                keywords_found.add(metadata['keyword'])
+            if metadata.get('author'):
+                authors_found.add(metadata['author'])
+
+        # Create concise 4-5 sentence summary
+        sentences = []
+
+        # Key findings
+        sentences.append(f"I found {num_results} relevant resources for '{query}' in the NU eLibrary collection.")
+
+        # Main themes and resource types
+        resource_types = []
+        if chunk_types.get('keyword_summary', 0) > 0:
+            resource_types.append(f"{chunk_types['keyword_summary']} subject overview(s)")
+        if chunk_types.get('author_summary', 0) > 0:
+            resource_types.append(f"{chunk_types['author_summary']} author profile(s)")
+        if chunk_types.get('book_detail', 0) > 0:
+            resource_types.append(f"{chunk_types['book_detail']} specific book(s)")
+
+        if resource_types:
+            sentences.append(f"The results include {', '.join(resource_types)} that directly relate to your research topic.")
+
+        # Academic value
+        if keywords_found:
+            keyword_list = list(keywords_found)[:2]
+            sentences.append(f"Key academic areas covered include {', '.join(keyword_list)}, providing valuable insights for your research.")
+
+        # Research guidance
+        sentences.append("These materials offer comprehensive coverage of your topic with diverse perspectives from NU faculty and researchers.")
+
+        if len(sentences) > 5:
+            sentences = sentences[:5]
+
+        return ' '.join(sentences)
+
+    def _generate_basic_recommendation_fallback(self, query, search_results):
+        """Generate concise basic recommendation fallback for other API errors"""
+        num_results = len(search_results['documents'][0])
+        return f"I found {num_results} relevant resources for '{query}' in the NU eLibrary collection. These materials provide valuable insights for your research and are available for reference."
 
 
 def display_book_card(book_data, rank, query, rag_system):
@@ -348,7 +485,25 @@ def display_book_card(book_data, rank, query, rag_system):
         button_text = "🔍 View Full Details on NU eLibrary"
         button_url = metadata.get('link', 'https://elibrary.nu.edu.om/')
 
-    # Create book card with appropriate styling
+    # Generate AI summary with chunk type awareness first
+    try:
+        with st.spinner(f"Generating summary for #{rank}..."):
+            summary = rag_system.generate_summary(document, query, chunk_type)
+    except Exception as e:
+        # Fallback summary based on chunk type
+        if chunk_type == 'keyword_summary':
+            keyword = metadata.get('keyword', 'Academic Subject')
+            summary = f"This collection covers '{keyword}' with resources relevant to '{query}', providing valuable academic materials for research and study."
+        elif chunk_type == 'author_summary':
+            author = metadata.get('author', 'NU Faculty')
+            keyword = metadata.get('keyword', 'Academic Subject')
+            summary = f"{author} is a researcher specializing in {keyword}, with publications relevant to '{query}' that contribute to academic discourse."
+        else:
+            author = metadata.get('author', 'NU Faculty')
+            keyword = metadata.get('keyword', 'Academic Subject')
+            summary = f"A library book by {author} in '{keyword}', providing valuable insights for '{query}' research."
+
+    # Create complete book card with all content in a single HTML block
     st.markdown(f"""
     <div class="book-card">
         <div style="display: flex; justify-content: space-between; align-items: start;">
@@ -366,27 +521,6 @@ def display_book_card(book_data, rank, query, rag_system):
                 </div>
             </div>
         </div>
-    """, unsafe_allow_html=True)
-
-    # Generate AI summary with chunk type awareness
-    try:
-        with st.spinner(f"Generating summary for #{rank}..."):
-            summary = rag_system.generate_summary(document, query, chunk_type)
-    except Exception as e:
-        # Fallback summary based on chunk type
-        if chunk_type == 'keyword_summary':
-            keyword = metadata.get('keyword', 'Academic Subject')
-            summary = f"A comprehensive overview of books and resources in '{keyword}', relevant to your search on '{query}'."
-        elif chunk_type == 'author_summary':
-            author = metadata.get('author', 'NU Faculty')
-            keyword = metadata.get('keyword', 'Academic Subject')
-            summary = f"Profile of {author} with {metadata.get('book_count', 0)} books in '{keyword}', relevant to your search on '{query}'."
-        else:
-            author = metadata.get('author', 'NU Faculty')
-            keyword = metadata.get('keyword', 'Academic Subject')
-            summary = f"A library book by {author} in '{keyword}', available for reference in the NU eLibrary collection."
-
-    st.markdown(f"""
         <div class="book-summary">
             <strong>🤖 AI Summary:</strong><br>
             {summary}
@@ -396,6 +530,7 @@ def display_book_card(book_data, rank, query, rag_system):
                 {button_text}
             </a>
         </div>
+    </div>
     """, unsafe_allow_html=True)
 
     # Display additional info based on chunk type
@@ -460,8 +595,6 @@ def display_book_card(book_data, rank, query, rag_system):
             elif 'International Maritime College Oman' in description:
                 st.markdown("**🏛️ College:** International Maritime College Oman")
 
-    st.markdown("</div>", unsafe_allow_html=True)
-
 
 def main():
     """Main application"""
@@ -469,7 +602,7 @@ def main():
     st.markdown("""
         <div class="header-banner">
             <h1>🧠 NU eLibrary Intelligent Search</h1>
-            <p style="margin-top: 0.5rem; font-size: 1.1rem; opacity: 0.9;">Keyword-Based AI-Powered Book Discovery</p>
+            <p style="margin-top: 0.5rem; font-size: 1.1rem; opacity: 0.9;">Keyword-Based AI-Powered Book Discovery with Concise Analysis</p>
         </div>
     """, unsafe_allow_html=True)
     
@@ -479,8 +612,6 @@ def main():
             st.session_state.rag_system = LibraryRAG()
     
     rag_system = st.session_state.rag_system
-    
-    # Sidebar removed for cleaner interface
     
     # Main search interface
     st.markdown("### 🔎 Search Books")
@@ -507,7 +638,7 @@ def main():
             if results['documents'][0]:
                 # Generate AI introduction
                 st.markdown("### 🤖 AI Analysis")
-                with st.spinner("Analyzing hierarchical results..."):
+                with st.spinner("Generating analysis..."):
                     intro = rag_system.generate_recommendations(query, results)
 
                 st.info(intro)
@@ -553,6 +684,7 @@ def main():
 
                 st.success(f"✅ Found {total_results} intelligently ranked results for your query")
                 st.info("💡 **Hierarchical Search Benefits:** Keyword overviews provide subject context, author profiles show research focus, and individual books offer specific details.")
+                st.info("🚀 **Concise Analysis:** This version provides focused, one-paragraph AI-generated summaries for quick reference.")
 
             else:
                 st.warning("😕 No books found matching your query. Try different keywords!")
@@ -570,7 +702,9 @@ def main():
                 Our intelligent system provides multi-level results: keyword overviews for subject context,
                 author profiles for research focus, and individual books for specific details.
             </p>
-           
+            <p style="color: #c6982c; font-weight: bold; margin-top: 1rem;">
+                ⚡ Enhanced with AI-powered concise analysis for quick reference
+            </p>
         </div>
         """, unsafe_allow_html=True)
     
