@@ -86,6 +86,17 @@ st.markdown("""
         text-align: center;
         margin-bottom: 2rem;
     }
+    /* Style radio buttons to look like tabs */
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] > div[data-testid="stRadio"] > div {
+        background-color: white;
+        padding: 0.5rem;
+        border-radius: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    div[data-testid="stRadio"] > label {
+        font-weight: 600;
+        color: #192f59;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -617,23 +628,8 @@ def display_book_card(book_data, rank, query, rag_system, summary_cache=None):
                 st.markdown("**🏛️ College:** International Maritime College Oman")
 
 
-def main():
-    """Main application"""
-    # Header
-    st.markdown("""
-        <div class="header-banner">
-            <h1>🧠 NU eLibrary Intelligent Search</h1>
-            <p style="margin-top: 0.5rem; font-size: 1.1rem; opacity: 0.9;">Keyword-Based AI-Powered Book Discovery with Concise Analysis</p>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    # Initialize RAG system
-    if 'rag_system' not in st.session_state:
-        with st.spinner("🔧 Initializing AI system..."):
-            st.session_state.rag_system = LibraryRAG()
-    
-    rag_system = st.session_state.rag_system
-    
+def keyword_search_tab(rag_system):
+    """Keyword search interface"""
     # Main search interface
     st.markdown("### 🔎 Search Books")
     
@@ -643,10 +639,11 @@ def main():
         query = st.text_input(
             "Enter your search query:",
             placeholder="e.g., research methodology, qualitative research, machine learning, data analysis...",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
+            key="keyword_search_input"
         )
     with col2:
-        search_button = st.button("🔍 Search", use_container_width=True)
+        search_button = st.button("🔍 Search", use_container_width=True, key="keyword_search_button")
     
     # Perform search
     if query and (search_button or query):
@@ -746,6 +743,295 @@ def main():
             </p>
         </div>
         """, unsafe_allow_html=True)
+
+
+def chatbot_tab(rag_system):
+    """Conversational chatbot interface for book recommendations"""
+    st.markdown("### 💬 AI Library Assistant")
+    
+    # Initialize chat history in session state
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+        st.session_state.chat_context = []
+        st.session_state.processing_message = False
+        st.session_state.current_user_input = None
+    
+    # Clear chat button at the top
+    col1, col2, col3 = st.columns([1, 1, 4])
+    with col1:
+        if st.button("🗑️ Clear Chat", key="clear_chat"):
+            st.session_state.chat_history = []
+            st.session_state.chat_context = []
+            st.session_state.processing_message = False
+            st.session_state.current_user_input = None
+    
+    # Display welcome message
+    if not st.session_state.chat_history and not st.session_state.processing_message:
+        st.markdown("""
+        <div style="background-color: #e8f4f8; padding: 1.5rem; border-radius: 10px; margin-bottom: 1rem;">
+            <h4 style="color: #192f59; margin-top: 0;">👋 Hello! I'm your AI Library Assistant</h4>
+            <p style="color: #666; margin-bottom: 0.5rem;">
+                I can help you discover books and resources through natural conversation. Ask me questions like:
+            </p>
+            <ul style="color: #666;">
+                <li>"I need books about machine learning for beginners"</li>
+                <li>"What resources do you have on healthcare management?"</li>
+                <li>"Can you recommend books about research methodology?"</li>
+                <li>"I'm looking for engineering textbooks"</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Display chat history in a container to keep it static
+    history_container = st.container()
+    with history_container:
+        for message in st.session_state.chat_history:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+                
+                # Display book recommendations if available (only for completed messages)
+                if message["role"] == "assistant" and "books" in message:
+                    st.markdown("---")
+                    st.markdown("**📚 Recommended Books:**")
+                    for book in message["books"]:
+                        display_chat_book_card(book)
+    
+    # If we're processing, show the NEW conversation (question + loading response)
+    if st.session_state.processing_message and st.session_state.current_user_input:
+        # Show user message
+        with st.chat_message("user"):
+            st.markdown(st.session_state.current_user_input)
+        
+        # Show loading for assistant
+        with st.chat_message("assistant"):
+            with st.spinner("🤔 Thinking and searching for books..."):
+                user_input = st.session_state.current_user_input
+                
+                # Search for relevant books
+                results = rag_system.search_books(user_input, n_results=3)
+                
+                if results['documents'][0]:
+                    # Generate conversational response
+                    response_text = generate_chat_response(rag_system, user_input, results, st.session_state.chat_context)
+                    
+                    books_data = []
+                    for i in range(len(results['documents'][0])):
+                        book_data = {
+                            'document': results['documents'][0][i],
+                            'metadata': results['metadatas'][0][i],
+                            'distance': results['distances'][0][i]
+                        }
+                        books_data.append(book_data)
+                    
+                    # Add messages to chat history
+                    st.session_state.chat_history.append({
+                        "role": "user",
+                        "content": user_input
+                    })
+                    
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": response_text,
+                        "books": books_data
+                    })
+                    
+                    # Update context for next conversation
+                    st.session_state.chat_context.append({
+                        "user": user_input,
+                        "assistant": response_text
+                    })
+                    
+                    # Keep only last 3 exchanges in context
+                    if len(st.session_state.chat_context) > 3:
+                        st.session_state.chat_context.pop(0)
+                
+                else:
+                    response_text = "I couldn't find any books matching your query. Could you try rephrasing or asking about a different topic?"
+                    
+                    # Add messages to history
+                    st.session_state.chat_history.append({
+                        "role": "user",
+                        "content": user_input
+                    })
+                    
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": response_text
+                    })
+                
+                # Reset processing flag and rerun to show the complete message
+                st.session_state.processing_message = False
+                st.session_state.current_user_input = None
+                st.rerun()
+    
+    # Chat input
+    user_input = st.chat_input("Ask me anything about books and resources...", key="chatbot_input")
+    
+    # Process user input
+    if user_input:
+        # Set processing flag and store input
+        st.session_state.processing_message = True
+        st.session_state.current_user_input = user_input
+        st.rerun()
+
+
+def generate_chat_response(rag_system, user_question, search_results, chat_context):
+    """Generate conversational response based on user question and search results"""
+    # Build context from previous conversation
+    context_str = ""
+    if chat_context:
+        context_str = "Previous conversation:\n"
+        for exchange in chat_context[-2:]:  # Last 2 exchanges
+            context_str += f"User: {exchange['user']}\n"
+            context_str += f"Assistant: {exchange['assistant']}\n\n"
+    
+    # Prepare search results context with book titles
+    books_context = "Available books:\n\n"
+    book_titles = []
+    for i, (doc, meta) in enumerate(zip(
+        search_results['documents'][0],
+        search_results['metadatas'][0]
+    )):
+        # Extract title for reference
+        title = meta.get('title', '')
+        if title and title != 'Library Book':
+            book_titles.append(title)
+        chunk_type = meta.get('chunk_type', 'publication_detail')
+        books_context += f"{i+1}. Type: {chunk_type}\n{doc[:300]}...\n\n"
+    
+    prompt = f"""You are a friendly AI librarian assistant for National University eLibrary.
+
+{context_str}
+
+Current question: {user_question}
+
+{books_context}
+
+Provide a warm, conversational response (3-4 sentences) that:
+1. Acknowledges the user's question naturally
+2. **IMPORTANTLY**: Mention specific book titles by name when available
+3. Explains why these resources would be helpful for their research
+4. Encourages further questions if needed
+
+Keep the tone friendly and helpful, like talking to a colleague. Use specific book titles in your response."""
+    
+    try:
+        response = rag_system.model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        # Fallback response with book titles
+        num_books = len(search_results['documents'][0])
+        fallback = f"I found {num_books} relevant resources for your question about '{user_question}'. "
+        
+        if book_titles:
+            fallback += f"Key recommendations include: {', '.join(book_titles[:2])}. "
+        
+        fallback += "These books cover various aspects of your topic and should provide valuable insights for your research. Feel free to ask if you need more specific recommendations!"
+        return fallback
+
+
+def display_chat_book_card(book_data):
+    """Display a compact book card for chat interface with prominent book title"""
+    metadata = book_data['metadata']
+    document = book_data['document']
+    chunk_type = metadata.get('chunk_type', 'publication_detail')
+    
+    # Determine card content based on chunk type
+    if chunk_type == 'keyword_summary':
+        title = f"📚 Keyword Collection: {metadata.get('keyword', 'Academic Collection')}"
+        subtitle = f"{metadata.get('total_books', 0)} books available"
+        keyword_search = metadata.get('keyword', '').replace(' ', '+')
+        link = f"https://elibrary.nu.edu.om/cgi-bin/koha/opac-search.pl?q={keyword_search}"
+        book_detail = ""
+    elif chunk_type == 'author_summary':
+        author = metadata.get('author', 'Author')
+        title = f"👤 Author: {author}"
+        subtitle = f"{metadata.get('book_count', 0)} publications • {metadata.get('keyword', 'Various topics')}"
+        author_name = author.replace(' ', '+')
+        link = f"https://elibrary.nu.edu.om/cgi-bin/koha/opac-search.pl?q=au:%22{author_name}%22"
+        book_detail = ""
+    else:  # book_detail
+        # Extract book title from metadata or document
+        book_title = metadata.get('title', '')
+        if not book_title or book_title == 'Library Book':
+            # Try to extract from document
+            if 'Title:' in document:
+                try:
+                    title_line = [line for line in document.split('\n') if line.startswith('Title:')][0]
+                    book_title = title_line.replace('Title:', '').strip()
+                except:
+                    book_title = 'Library Book'
+        
+        # Extract author
+        author = metadata.get('author', '')
+        if not author or author == 'NU Faculty':
+            if 'Author:' in document:
+                try:
+                    author_line = [line for line in document.split('\n') if line.startswith('Author:')][0]
+                    author = author_line.replace('Author:', '').strip()
+                except:
+                    author = 'Unknown Author'
+        
+        title = f"📖 {book_title}"
+        subtitle = f"by {author}"
+        link = metadata.get('link', 'https://elibrary.nu.edu.om/')
+        
+        # Add keyword if available
+        keyword = metadata.get('keyword', '')
+        if keyword:
+            book_detail = f"<div style='color: #888; font-size: 0.85rem; margin-top: 0.3rem;'>🏷️ Subject: {keyword}</div>"
+        else:
+            book_detail = ""
+    
+    st.markdown(f"""
+    <div style="background-color: #f8f9fa; padding: 1rem; border-radius: 8px; margin-bottom: 0.8rem; border-left: 3px solid #c6982c;">
+        <div style="font-weight: bold; color: #192f59; margin-bottom: 0.3rem; font-size: 1.05rem;">
+            <a href="{link}" target="_blank" style="color: #192f59; text-decoration: none;">
+                {title} 🔗
+            </a>
+        </div>
+        <div style="color: #666; font-size: 0.9rem;">
+            {subtitle}
+        </div>
+        {book_detail}
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def main():
+    """Main application"""
+    # Header
+    st.markdown("""
+        <div class="header-banner">
+            <h1>🧠 NU eLibrary Intelligent Search</h1>
+            <p style="margin-top: 0.5rem; font-size: 1.1rem; opacity: 0.9;">AI-Powered Book Discovery & Conversational Assistant</p>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # Initialize RAG system
+    if 'rag_system' not in st.session_state:
+        with st.spinner("🔧 Initializing AI system..."):
+            st.session_state.rag_system = LibraryRAG()
+    
+    rag_system = st.session_state.rag_system
+    
+    # Tab selection using radio buttons (better state management than st.tabs)
+    st.markdown("---")
+    selected_tab = st.radio(
+        "Choose Interface:",
+        options=["🔍 Keyword Search", "💬 AI Chatbot"],
+        horizontal=True,
+        key="main_tab_selector",
+        label_visibility="collapsed"
+    )
+    
+    st.markdown("---")
+    
+    # Display selected tab content
+    if selected_tab == "🔍 Keyword Search":
+        keyword_search_tab(rag_system)
+    else:  # AI Chatbot
+        chatbot_tab(rag_system)
     
     # Footer
     st.markdown("---")
